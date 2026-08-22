@@ -8,7 +8,6 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - main
       - master
     paths:
       - 'index.js'
@@ -34,7 +33,7 @@ jobs:
           cd /home/ubuntu/whatsapp-bot
           
           # Pull latest code
-          git pull origin main
+          git pull origin master
           
           # Rebuild and restart
           docker compose down
