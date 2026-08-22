@@ -1,7 +1,3 @@
-# ============================================
-# 🚀 Deploy WhatsApp Bot - EC2 (Simple)
-# ============================================
-
 name: Deploy WhatsApp Bot
 
 on:
@@ -23,21 +19,19 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v3
 
-    - name: Deploy to EC2
-      uses: appleboy/ssh-action@v0.1.8
-      with:
-        host: ${{ secrets.EC2_HOST }}
-        username: ${{ secrets.EC2_USER }}
-        key: ${{ secrets.EC2_SSH_KEY }}
-        script: |
-          cd /home/ubuntu/whatsapp-bot
-          
-          # Pull latest code
-          git pull origin master
-          
-          # Rebuild and restart
-          docker compose down
-          docker compose up -d --build
-          
-          # Show logs
-          docker compose logs --tail=20
+    - name: Setup SSH key
+      run: |
+        echo "${{ secrets.EC2_SSH_KEY }}" > key.pem
+        chmod 600 key.pem
+
+    - name: Copy files to EC2
+      run: |
+        scp -o StrictHostKeyChecking=no -i key.pem \
+          index.js \
+          ubuntu@${{ secrets.EC2_HOST }}:/home/ubuntu/whatsapp-bot/
+
+    - name: Rebuild and restart
+      run: |
+        ssh -o StrictHostKeyChecking=no -i key.pem \
+          ubuntu@${{ secrets.EC2_HOST }} \
+          "cd /home/ubuntu/whatsapp-bot && docker compose down && docker compose up -d --build && docker compose logs --tail=20"
