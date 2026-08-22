@@ -846,17 +846,40 @@ async function connectToWhatsApp() {
                 // ============================================
 
                 if (!userState[sender]) {
+                // ============================================
+                // 🎯 Check for intent BEFORE showing main menu
+                // ============================================
+                const intentResult = detectIntent(text);
+                
+                if (intentResult.matched) {
+                    // Initialize state first
                     userState[sender] = {
                         step: 'main_menu',
                         data: { whatsapp_name: senderName }
                     };
                     resetUserTimer(sender, sock);
-
-                    const welcomeMessage = formatMainMenu(senderName);
-                    await sock.sendMessage(sender, { text: welcomeMessage });
-                    log(`📝 Main menu shown to ${senderName}`, 'info');
-                    return;
+                    
+                    // Route to the appropriate flow
+                    const intentResponse = handleIntentBasedRouting(text, userState[sender], senderName);
+                    if (intentResponse) {
+                        await sock.sendMessage(sender, { text: intentResponse });
+                        log(`🎯 Intent detected: ${intentResult.action} for ${senderName}`, 'info');
+                        return;
+                    }
                 }
+                
+                // No intent detected - show main menu
+                userState[sender] = {
+                    step: 'main_menu',
+                    data: { whatsapp_name: senderName }
+                };
+                resetUserTimer(sender, sock);
+
+                const welcomeMessage = formatMainMenu(senderName);
+                await sock.sendMessage(sender, { text: welcomeMessage });
+                log(`📝 Main menu shown to ${senderName}`, 'info');
+                return;
+            }
 
                 // ============================================
                 // 🔄 RESET TIMER ON EACH INTERACTION
