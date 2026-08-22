@@ -415,7 +415,7 @@ function formatSellRentOperations() {
 }
 
 // ============================================
-// 🔧 FUNCIÓN PARA AGREGAR NAVEGACIÓN A PASOS DE TEXTO
+// 🔧 FUNCTION TO ADD NAVIGATION TO TEXT STEPS
 // ============================================
 
 function addTextNavigation(text, optionsLength = 0) {
@@ -917,6 +917,14 @@ async function connectToWhatsApp() {
                     // ============================================
 
                     case 'main_menu':
+                        // ============================================
+                        // 🧠 INTENT DETECTION (FIRST)
+                        // ============================================
+                        const intentResponse = handleIntentBasedRouting(text, state, senderName);
+                        if (intentResponse) {
+                            response = intentResponse;
+                            break;
+                        }
                         const menuOption = parseInt(text);
                         const selectedAction = MAIN_MENU.find(m => m.id === menuOption);
 
@@ -1773,6 +1781,126 @@ async function connectToWhatsApp() {
     } catch (error) {
         log(`Connection error: ${error.message}`, 'error');
         setTimeout(() => connectToWhatsApp(), RECONNECT_DELAY);
+    }
+}
+
+// ============================================
+// 🔍 INTENT DETECTION (SOLID - Open/Closed)
+// ============================================
+
+const INTENT_PATTERNS = [
+    {
+        id: 'credit_card',
+        keywords: ['tarjeta', 'credito', 'crf', 'gold', 'precalificar', 'cupo', 'plastico'],
+        action: 'credit_card',
+        priority: 1,
+        description: 'Solicitud de tarjeta de crédito'
+    },
+    {
+        id: 'property_buy',
+        keywords: ['comprar', 'casa', 'apartamento', 'propiedad', 'inmueble', 'terreno', 'lote'],
+        action: 'colombia',
+        priority: 2,
+        description: 'Búsqueda de propiedades'
+    },
+    {
+        id: 'miami',
+        keywords: ['miami', 'usa', 'estados unidos', 'invertir', 'dolar'],
+        action: 'miami',
+        priority: 3,
+        description: 'Inversión en Miami'
+    },
+    {
+        id: 'sell_rent',
+        keywords: ['vender', 'arrendar', 'alquilar', 'publicar', 'venta', 'arriendo'],
+        action: 'sell_rent',
+        priority: 4,
+        description: 'Vender o arrendar propiedad'
+    }
+];
+
+// ============================================
+// 🧠 INTENT DETECTION ENGINE
+// ============================================
+
+function detectIntent(message) {
+    const lowerMessage = message.toLowerCase().trim();
+    
+    // Sort by priority (lower number = higher priority)
+    const sortedPatterns = [...INTENT_PATTERNS].sort((a, b) => a.priority - b.priority);
+    
+    for (const pattern of sortedPatterns) {
+        const matched = pattern.keywords.some(keyword => 
+            lowerMessage.includes(keyword.toLowerCase())
+        );
+        
+        if (matched) {
+            return {
+                intent: pattern.id,
+                action: pattern.action,
+                description: pattern.description,
+                matched: true
+            };
+        }
+    }
+    
+    return {
+        intent: 'unknown',
+        action: null,
+        description: 'Unknown intent',
+        matched: false
+    };
+}
+
+// ============================================
+// 🎯 INTENT ROUTER (Called in main menu)
+// ============================================
+
+function handleIntentBasedRouting(text, state, senderName) {
+    const intentResult = detectIntent(text);
+    
+    if (!intentResult.matched) {
+        return null; // No intent detected, proceed with normal flow
+    }
+    
+    // Special case: credit card detection with keywords
+    if (intentResult.action === 'credit_card') {
+        state.action = 'credit_card';
+        state.step = 'awaiting_credit_card_confirm';
+        return formatCreditCardIntro();
+    }
+    
+    // Other intent routing
+    switch (intentResult.action) {
+        case 'colombia':
+            state.action = 'colombia';
+            state.step = 'awaiting_operation';
+            return formatOperationTypes();
+            
+        case 'miami':
+            state.action = 'miami';
+            state.step = 'awaiting_miami_name';
+            return `🌴 *Inversión en Miami*\n\n` +
+                   `Excelente elección, ${senderName}! Miami es un mercado muy atractivo.\n\n` +
+                   `Para comenzar, ¿cuál es tu *nombre completo*?\n\n` +
+                   `📌 *Comandos:*\n` +
+                   `• "volver" o *${getNavIds(0).go_back}* → Paso anterior\n` +
+                   `• "menú" o *${getNavIds(0).menu}* → Menú principal\n` +
+                   `• "cancelar" o *${getNavIds(0).cancel}* → Terminar conversación`;
+            
+        case 'sell_rent':
+            state.action = 'sell_rent';
+            state.step = 'awaiting_sell_rent_name';
+            return `🔹 Has seleccionado *Vender o poner en arriendo una propiedad*.\n\n` +
+                   `📌 Un asesor se comunicará contigo en las próximas 24 horas.\n` +
+                   `📝 Por favor, déjanos tu *nombre completo*.\n\n` +
+                   `📌 *Comandos:*\n` +
+                   `• "volver" o *${getNavIds(0).go_back}* → Paso anterior\n` +
+                   `• "menú" o *${getNavIds(0).menu}* → Menú principal\n` +
+                   `• "cancelar" o *${getNavIds(0).cancel}* → Terminar conversación`;
+            
+        default:
+            return null;
     }
 }
 
