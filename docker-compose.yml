@@ -1,0 +1,20 @@
+services:
+  whatsapp-bot:
+    build: .
+    container_name: whatsapp-property-bot
+    restart: unless-stopped
+    volumes:
+      # Persist session and logs
+      - ./auth_info_baileys:/app/auth_info_baileys
+      - ./logs:/app/logs
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+    # Optional: health check to verify bot is running
+    healthcheck:
+      test: ["CMD", "node", "-e", "console.log('healthy')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
