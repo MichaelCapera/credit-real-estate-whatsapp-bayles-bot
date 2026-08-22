@@ -918,7 +918,7 @@ async function connectToWhatsApp() {
 
                     case 'main_menu':
                         // ============================================
-                        // 🧠 INTENT DETECTION (FIRST)
+                        // 🧠 INTENT DETECTION (FIRST STEP) 
                         // ============================================
                         const intentResponse = handleIntentBasedRouting(text, state, senderName);
                         if (intentResponse) {
