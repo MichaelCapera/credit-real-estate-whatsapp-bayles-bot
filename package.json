@@ -5,7 +5,9 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "node --watch index.js"
+    "dev": "node --watch index.js",
+    "test:flows": "node tests/testFlows.js",
+    "check": "node --check index.js && find src -name '*.js' -exec node --check {} \\;"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^6.6.0",
