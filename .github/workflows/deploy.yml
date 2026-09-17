@@ -7,6 +7,7 @@ on:
       - master
     paths:
       - 'index.js'
+      - 'src/**'
       - 'Dockerfile'
       - 'package.json'
       - 'docker-compose.yml'
@@ -26,8 +27,9 @@ jobs:
 
     - name: Copy files to EC2
       run: |
-        scp -o StrictHostKeyChecking=no -i key.pem \
+        scp -r -o StrictHostKeyChecking=no -i key.pem \
           index.js \
+          src \
           ubuntu@${{ secrets.EC2_HOST }}:/home/ubuntu/whatsapp-bot/
 
     - name: Rebuild and restart

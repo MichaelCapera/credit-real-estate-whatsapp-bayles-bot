@@ -27,6 +27,7 @@ RUN npm install --only=production
 
 # Copy application code
 COPY index.js .
+COPY src ./src
 
 # Create necessary folders
 RUN mkdir -p auth_info_baileys logs
