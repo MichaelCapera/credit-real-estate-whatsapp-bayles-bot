@@ -27,7 +27,7 @@ const miamiFlow       = require('../flows/miami');
 const creditCardFlow  = require('../flows/creditCard');
 const sellRentFlow    = require('../flows/sellRent');
 const searchAgainFlow = require('../flows/searchAgain');
-const { handleReference } = require('./reference');
+const { handleReference,  handleReferenceAction } = require('./reference');
 const { isPaused } = require('./human');
 const { normalizeJid, isRestricted, logRestricted } = require('./restricted');
 
@@ -74,6 +74,9 @@ const FLOW_ROUTER = {
 
     // Search again
     'search_again':                 searchAgainFlow.handleSearchAgain,
+
+    // Reference actions (from Ref #XXXaN links)
+    'awaiting_reference_action':    handleReferenceAction,
 };
 
 async function handleMessage(sock, msg, botJid) {

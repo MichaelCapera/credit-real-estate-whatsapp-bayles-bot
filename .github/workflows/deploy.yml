@@ -30,6 +30,7 @@ jobs:
         scp -r -o StrictHostKeyChecking=no -i key.pem \
           index.js \
           src \
+          docker-compose.yml \
           ubuntu@${{ secrets.EC2_HOST }}:/home/ubuntu/whatsapp-bot/
 
     - name: Rebuild and restart
