@@ -22,6 +22,12 @@ const GROUP_CONFIG = {
     triggerWords: ['@bot', '!bot', 'asistente', 'ayuda', 'hola bot']
 };
 
+// ============================================
+// 🌐 EXTERNAL APIs
+// ============================================
+const API_BASE_URL = process.env.API_BASE_URL || 'https://creditofincaraiz.online';
+const PROPERTIES_API_URL = process.env.PROPERTIES_API_URL || 'https://8xuawsbnzg.execute-api.us-east-1.amazonaws.com/dev/data-properties';
+
 module.exports = {
     BOT_NUMBER,
     SESSION_FOLDER,
@@ -29,5 +35,7 @@ module.exports = {
     RECONNECT_DELAY,
     SESSION_TIMEOUT_MS,
     ENABLE_LOGS,
-    GROUP_CONFIG
+    GROUP_CONFIG,
+    API_BASE_URL,
+    PROPERTIES_API_URL,
 };

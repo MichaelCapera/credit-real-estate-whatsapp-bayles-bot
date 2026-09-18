@@ -11,6 +11,8 @@ services:
       - "3000:3000"
     environment:
       - NODE_ENV=production
+      - API_BASE_URL=https://creditofincaraiz.online
+      - PROPERTIES_API_URL=https://8xuawsbnzg.execute-api.us-east-1.amazonaws.com/dev/data-properties
     # Optional: health check to verify bot is running
     healthcheck:
       test: ["CMD", "node", "-e", "console.log('healthy')"]
