@@ -141,14 +141,27 @@ async function handleReference(sock, sender, senderName, text) {
     message: text,
     };
 
-    createLead(leadPayload).then(res => {
-        if (res && res.success) {
-            log(`✅ Lead saved: ID ${res.lead_id}`, 'info');
-            userState[sender].data.leadId = res.lead_id;
-        } else {
-            log(`⚠️ Failed to save lead`, 'warn');
-        }
-    })
+    createLead(leadPayload)
+        .then(async res => {
+            if (res && res.success) {
+                log(`✅ Lead saved: ID ${res.lead_id}`, 'info');
+                userState[sender].data.leadId = res.lead_id;
+
+                // 🔔 Notify the agent — only if attributed and we have a valid phone
+                if (res.agent_assigned && agent && agent.phone) {
+                    await notifyAgent(sock, agent, {
+                        customerName:  senderName,
+                        customerPhone: phone || 'pending',
+                        interest:      `Ref #${propertyId}`,
+                        message:       text,
+                        source:        'whatsapp',
+                    });
+                }
+            } else {
+                log(`⚠️ Failed to save lead`, 'warn');
+            }
+        })
+        .catch(err => log(`❌ createLead failed: ${err.message}`, 'error'));
 
     // ─────────────────────────────────────────
     // Build response
@@ -251,6 +264,62 @@ function extractPhoneFromJid(jid) {
         return jid.split('@')[0];
     }
     return null;
+}
+
+/**
+ * Normalize a Colombian phone number into a WhatsApp JID.
+ * Accepts: "3153045383", "315 304 5383", "+57 315 304 5383", "573153045383".
+ * Returns null if the number can't be parsed.
+ *
+ * All agents are Colombia-based, so we assume +57 for 10-digit mobiles.
+ */
+function phoneToJid(phone) {
+    if (!phone) return null;
+    let digits = String(phone).replace(/\D/g, '');
+
+    // Colombian mobile: 10 digits starting with 3 → prepend country code
+    if (digits.length === 10 && digits.startsWith('3')) {
+        digits = '57' + digits;
+    }
+
+    if (digits.length < 11 || digits.length > 15) return null;
+    return `${digits}@s.whatsapp.net`;
+}
+
+/**
+ * Send a WhatsApp notification to the agent about a new lead.
+ * Failures never bubble up — we never want to break the customer flow.
+ */
+async function notifyAgent(sock, agent, lead) {
+    const jid = phoneToJid(agent.phone);
+    if (!jid) {
+        log(`⚠️ Agent ${agent.name} has no valid phone — notification skipped`, 'warn');
+        return;
+    }
+
+    const phoneDisplay = lead.customerPhone === 'pending'
+        ? '_(pendiente — el cliente lo compartirá pronto)_'
+        : lead.customerPhone;
+
+    const trimmedMessage = lead.message
+        ? `💬 _"${lead.message.slice(0, 120)}${lead.message.length > 120 ? '…' : ''}"_\n`
+        : '';
+
+    const text =
+        `🔔 *Nuevo lead asignado*\n\n` +
+        `👤 *${lead.customerName}*\n` +
+        `📞 ${phoneDisplay}\n` +
+        `🏠 ${lead.interest}\n` +
+        trimmedMessage +
+        `\n📥 Fuente: ${lead.source === 'whatsapp' ? 'WhatsApp' : lead.source}\n\n` +
+        `👉 Ver en el panel:\n${API_BASE_URL}/agent/dashboard`;
+
+    try {
+        await sock.sendMessage(jid, { text });
+        log(`🔔 Agent notified: ${agent.name} (${agent.phone})`, 'success');
+    } catch (err) {
+        log(`❌ Failed to notify agent ${agent.name}: ${err.message}`, 'error');
+    }
 }
 
 module.exports = { handleReference, handleReferenceAction };
