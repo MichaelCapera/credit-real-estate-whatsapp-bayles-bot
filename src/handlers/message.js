@@ -151,7 +151,7 @@ async function handleMessage(sock, msg, botJid) {
         // ============================================
         // 🔗 CHECK FOR REFERENCE LINK (Ref #XXXaN)
         // ============================================
-        const handled = await handleReference(sock, sender, senderName, text);
+        const handled = await handleReference(sock, sender, senderName, text, msg);
         if (handled) return;
 
         // ============================================

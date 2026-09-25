@@ -87,7 +87,7 @@ function buildPropertyCard(property) {
  *   "Ref: #498a2"
  *   "Hola, me interesa (Ref: #498a2)"
  */
-async function handleReference(sock, sender, senderName, text) {
+async function handleReference(sock, sender, senderName, text, msg) {
     const match = text.match(/Ref[:\s]*#?(\d+)a(\d+)/i);
     if (!match) return false;
 
@@ -130,7 +130,8 @@ async function handleReference(sock, sender, senderName, text) {
     // ─────────────────────────────────────────
     const property = await fetchProperty(propertyId);
 
-    const phone = extractPhoneFromJid(sender);
+    const phone = extractPhoneFromJid(msg);
+    log(`[REFERENCE] sender=${sender} | phone=${phone}`, 'info');
     const leadPayload = {
     type: 'property',
     name: senderName,
@@ -259,10 +260,29 @@ async function createLead(payload) {
     }
 }
 
-function extractPhoneFromJid(jid) {
-    if (jid && jid.endsWith('@s.whatsapp.net')) {
-        return jid.split('@')[0];
+/**
+ * Extract the real phone number from a WhatsApp message.
+ * Supports both classic "@s.whatsapp.net" JIDs and the newer "@lid" format.
+ * Returns digits only (e.g., "573153045383") or null.
+ */
+function extractPhoneFromJid(msg) {
+    const jid = msg?.key?.remoteJid || '';
+
+    // Case 1: classic format — 573153045383:12@s.whatsapp.net
+    if (jid.endsWith('@s.whatsapp.net')) {
+        return jid.split('@')[0].split(':')[0].replace(/\D/g, '') || null;
     }
+
+    // Case 2: @lid format — the real phone lives in senderPn or remoteJidAlt
+    if (jid.endsWith('@lid')) {
+        const alt = msg?.key?.senderPn ||
+                    (msg?.key?.remoteJidAlt?.endsWith('@s.whatsapp.net')
+                        ? msg.key.remoteJidAlt.split('@')[0]
+                        : null);
+        if (!alt) return null;
+        return alt.split(':')[0].replace(/\D/g, '') || null;
+    }
+
     return null;
 }
 
