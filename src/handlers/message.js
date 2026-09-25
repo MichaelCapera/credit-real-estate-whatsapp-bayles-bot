@@ -30,6 +30,7 @@ const searchAgainFlow = require('../flows/searchAgain');
 const { handleReference,  handleReferenceAction } = require('./reference');
 const { isPaused } = require('./human');
 const { normalizeJid, isRestricted, logRestricted } = require('./restricted');
+const { handleAgentAccess } = require('./agent-access');
 
 /**
  * Dispatch table: maps state.step → flow handler
@@ -152,6 +153,12 @@ async function handleMessage(sock, msg, botJid) {
         // ============================================
         const handled = await handleReference(sock, sender, senderName, text);
         if (handled) return;
+
+        // ============================================
+        // 🔑 CHECK FOR AGENT ACCESS ("soy asesor", "quiero ver catálogo")
+        // ============================================
+        const agentHandled = await handleAgentAccess(sock, sender, senderName, text);
+        if (agentHandled) return;
 
 
         // ============================================
