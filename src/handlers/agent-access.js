@@ -29,7 +29,8 @@ function matchesAgentIntent(text) {
  * Handle "soy asesor" intent — sends a magic link via WhatsApp.
  * Returns true if handled, false to let the flow continue.
  */
-async function handleAgentAccess(sock, sender, senderName, text) {
+async function handleAgentAccess(sock, sender, senderName, text, msg) {
+    log(`[AGENT ACCESS] msg.key = ${JSON.stringify(msg.key)}`, 'debug');
     // Bail out if the message doesn't match any agent pattern
     if (!matchesAgentIntent(text)) {
         return false;
@@ -38,10 +39,31 @@ async function handleAgentAccess(sock, sender, senderName, text) {
     log(`🔑 Agent access request from ${sender}`, 'info');
 
     // Extract phone from JID
-    const rawPhone = sender.endsWith('@s.whatsapp.net')
-        ? sender.split('@')[0]      // "573153045383:12"
-        : null;
-    const phone = rawPhone ? rawPhone.split(':')[0] : null;
+    // Try to extract the phone from the JID.
+    // WhatsApp now sends many chats as "@lid" (Linked Device ID) instead of
+    // "@s.whatsapp.net". When that happens, we look for the real phone number
+    // in msg.key.senderPn or msg.key.remoteJidAlt (Baileys exposes it there).
+    let rawPhone = null;
+
+    if (sender.endsWith('@s.whatsapp.net')) {
+        // Classic format: 573153045383:12@s.whatsapp.net
+        rawPhone = sender.split('@')[0];
+    } else if (sender.endsWith('@lid')) {
+        // Restricted format: 228165909754087:3@lid
+        // The real phone is exposed in different fields depending on Baileys version.
+        // Try them in order of reliability.
+        rawPhone =
+            (msg && msg.key && msg.key.senderPn) ||
+            (msg && msg.key && msg.key.remoteJidAlt && msg.key.remoteJidAlt.includes('@s.whatsapp.net')
+                ? msg.key.remoteJidAlt.split('@')[0]
+                : null) ||
+            null;
+    }
+
+    // Strip device suffix if present
+    const phone = rawPhone ? rawPhone.split(':')[0].replace(/\D/g, '') : null;
+
+    log(`[AGENT ACCESS] sender=${sender} | rawPhone=${rawPhone} | phone=${phone}`, 'info');
 
     if (!phone) {
         await sock.sendMessage(sender, {
