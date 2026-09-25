@@ -38,9 +38,10 @@ async function handleAgentAccess(sock, sender, senderName, text) {
     log(`🔑 Agent access request from ${sender}`, 'info');
 
     // Extract phone from JID
-    const phone = sender.endsWith('@s.whatsapp.net')
-        ? sender.split('@')[0]
+    const rawPhone = sender.endsWith('@s.whatsapp.net')
+        ? sender.split('@')[0]      // "573153045383:12"
         : null;
+    const phone = rawPhone ? rawPhone.split(':')[0] : null;
 
     if (!phone) {
         await sock.sendMessage(sender, {
@@ -64,6 +65,8 @@ async function handleAgentAccess(sock, sender, senderName, text) {
             await sock.sendMessage(sender, {
                 text:
                     `⚠️ ${data.message || 'No pudimos generar tu acceso.'}\n\n` +
+                    `📱 Tu número de WhatsApp detectado: *${phone}*\n\n` +
+                    `Si ese número no es el que registraste, escríbenos para actualizarlo.\n\n` +
                     `Si aún no eres asesor, regístrate aquí:\n${API_BASE_URL}/agent/welcome`
             });
             resetUserTimer(sender, sock);
