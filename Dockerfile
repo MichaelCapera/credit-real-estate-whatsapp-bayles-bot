@@ -23,7 +23,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install Node.js dependencies
-RUN npm install --only=production
+RUN npm install --omit=dev --no-audit --no-fund
 
 # Copy application code
 COPY index.js .

@@ -179,7 +179,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: [test, docker]
     if: github.event_name != 'pull_request'
-    timeout-minutes: 20
+    timeout-minutes: 30
+
+    env:
+      # Keepalives stop the connection from dropping during long silent steps (npm install)
+      SSH_OPTS: -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -i key.pem
 
     steps:
     - name: Checkout code
@@ -203,9 +207,25 @@ jobs:
         echo "${{ secrets.EC2_SSH_KEY }}" > key.pem
         chmod 600 key.pem
 
+    # t4g.nano has 512 MB RAM: without swap, npm install inside docker build
+    # exhausts memory, the instance freezes and SSH drops (exit 255).
+    # Idempotent: only creates/enables the swap file when it is not active.
+    - name: Ensure swap on EC2
+      run: |
+        ssh $SSH_OPTS ubuntu@${{ secrets.EC2_HOST }} 'bash -s' <<'EOF'
+        set -e
+        if ! swapon --show=NAME --noheadings | grep -qx /swapfile; then
+          [ -f /swapfile ] || { sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile; }
+          sudo swapon /swapfile
+          grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab > /dev/null
+          echo "Swap enabled"
+        fi
+        free -m
+        EOF
+
     - name: Copy files to EC2
       run: |
-        scp -r -o StrictHostKeyChecking=no -i key.pem \
+        scp -r $SSH_OPTS \
           index.js \
           src \
           package.json \
@@ -221,20 +241,19 @@ jobs:
         BOT_API_TOKEN: ${{ secrets.BOT_API_TOKEN }}
       run: |
         if [ -z "$BOT_API_TOKEN" ]; then echo "BOT_API_TOKEN secret empty, skipping"; exit 0; fi
-        ssh -o StrictHostKeyChecking=no -i key.pem ubuntu@${{ secrets.EC2_HOST }} \
+        ssh $SSH_OPTS ubuntu@${{ secrets.EC2_HOST }} \
           "umask 077 && printf 'BOT_API_TOKEN=%s\n' '$BOT_API_TOKEN' > ${{ env.APP_DIR }}/.env"
 
     # Build first: if the build fails, the running container is left untouched
     - name: Rebuild and restart
       run: |
-        ssh -o StrictHostKeyChecking=no -i key.pem \
-          ubuntu@${{ secrets.EC2_HOST }} \
+        ssh $SSH_OPTS ubuntu@${{ secrets.EC2_HOST }} \
           "cd ${{ env.APP_DIR }} && docker compose build && docker compose up -d && docker compose logs --tail=20"
 
     # Never prints the token: only checks that it is present inside the container
     - name: Verify deployment
       run: |
-        ssh -o StrictHostKeyChecking=no -i key.pem ubuntu@${{ secrets.EC2_HOST }} 'bash -s' <<'EOF'
+        ssh $SSH_OPTS ubuntu@${{ secrets.EC2_HOST }} 'bash -s' <<'EOF'
         set -e
         sleep 15
         STATUS=$(docker inspect -f '{{.State.Status}}' whatsapp-property-bot)
