@@ -5,3 +5,10 @@ logs
 .env
 *.md
 .DS_Store
+.env.*
+tests
+reports
+coverage
+.github
+iac
+simulator.js

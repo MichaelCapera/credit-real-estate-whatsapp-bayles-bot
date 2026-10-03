@@ -1,24 +1,202 @@
-name: Deploy WhatsApp Bot
+name: WhatsApp Bot CI/CD (EC2)
 
+# PR to master       -> syntax check + unit tests + Docker build (no deploy)
+# push to master     -> same checks, then deploy to EC2 over SSH + post-deploy verification
+# workflow_dispatch  -> same as push, triggered manually
 on:
   workflow_dispatch:
+  pull_request:
+    branches:
+      - master
   push:
     branches:
       - master
     paths:
       - 'index.js'
       - 'src/**'
+      - 'tests/**'
+      - 'scripts/**'
       - 'Dockerfile'
+      - '.dockerignore'
       - 'package.json'
       - 'docker-compose.yml'
+      - '.github/workflows/deploy.yml'
+
+# One deploy at a time; on PRs a new push cancels the previous run
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+# Explicit bash => "-eo pipefail": a failing command inside a pipe fails the step
+defaults:
+  run:
+    shell: bash
+
+env:
+  NODE_VERSION: "20"          # Keep in sync with the Dockerfile base image (node:20-alpine)
+  MIN_COVERAGE: "60"          # Minimum % of line coverage over src/ (raise it as tests grow)
+  APP_DIR: /home/ubuntu/whatsapp-bot
+  CONTAINER: whatsapp-property-bot
 
 jobs:
-  deploy:
+  # ===========================================================================
+  # 1. SYNTAX CHECK + UNIT TESTS
+  # ===========================================================================
+  test:
+    name: Check & unit tests
     runs-on: ubuntu-latest
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
+
+    - name: Set up Node.js ${{ env.NODE_VERSION }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ env.NODE_VERSION }}
+
+    # No lockfile is committed, so a plain install (same as the Dockerfile)
+    - name: Install dependencies
+      run: npm install --no-audit --no-fund
+
+    - name: Syntax check & module tree
+      run: npm run check
+
+    - name: Run unit tests
+      run: |
+        mkdir -p reports
+        node --test --experimental-test-coverage \
+          --test-reporter=spec --test-reporter-destination=stdout \
+          --test-reporter=junit --test-reporter-destination=reports/junit.xml \
+          --test-reporter=lcov --test-reporter-destination=reports/lcov.info
+
+    - name: Publish test summary & enforce coverage
+      if: always()
+      run: |
+        if [ ! -f reports/junit.xml ]; then
+          echo "## Unit tests" >> "$GITHUB_STEP_SUMMARY"
+          echo "No test report was generated." >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+
+        node <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+        const fs = require('fs');
+        const xml = fs.readFileSync('reports/junit.xml', 'utf8');
+        const cases = [...xml.matchAll(/<testcase\b[^>]*?name="([^"]*)"[^>]*?(\/>|>([\s\S]*?)<\/testcase>)/g)];
+        const failed = cases.filter((c) => /<failure\b|<error\b/.test(c[3] || ''));
+        const skipped = cases.filter((c) => /<skipped\b/.test(c[3] || ''));
+        const passed = cases.length - failed.length - skipped.length;
+        const icon = failed.length === 0 ? '✅' : '❌';
+
+        console.log(`## ${icon} Unit tests\n`);
+        console.log('| Total | Passed | Failed | Skipped |\n|---|---|---|---|');
+        console.log(`| ${cases.length} | ${passed} | ${failed.length} | ${skipped.length} |\n`);
+        if (failed.length) {
+          console.log('### Failed tests\n');
+          failed.forEach((c) => console.log(`- \`${c[1]}\``));
+          console.log('');
+        }
+
+        // Coverage over src/ only (Node also reports the test files themselves)
+        if (fs.existsSync('reports/lcov.info')) {
+          const rows = [];
+          let total = 0, hit = 0;
+          for (const rec of fs.readFileSync('reports/lcov.info', 'utf8').split('end_of_record')) {
+            const file = (rec.match(/^SF:(.*)$/m) || [])[1];
+            if (!file || !/(^|[\\/])src[\\/]/.test(file)) continue;
+            const lf = +(rec.match(/^LF:(\d+)$/m) || [0, 0])[1];
+            const lh = +(rec.match(/^LH:(\d+)$/m) || [0, 0])[1];
+            total += lf; hit += lh;
+            rows.push(`| \`${file.split(/(?:^|[\\/])src[\\/]/).pop()}\` | ${lf} | ${lf ? (100 * lh / lf).toFixed(1) : '0.0'}% |`);
+          }
+          const pct = total ? (100 * hit / total) : 0;
+          console.log('### Coverage (files loaded by the tests)\n\n| File | Lines | Covered |\n|---|---|---|');
+          rows.forEach((r) => console.log(r));
+          console.log(`\n**Total: ${pct.toFixed(1)}%** (minimum ${process.env.MIN_COVERAGE}%)`);
+          fs.writeFileSync('reports/coverage_pct.txt', pct.toFixed(1));
+        }
+        EOF
+
+        if [ -f reports/coverage_pct.txt ]; then
+          PCT=$(cat reports/coverage_pct.txt)
+          echo "Coverage: ${PCT}% (minimum ${MIN_COVERAGE}%)"
+          if awk "BEGIN { exit !($PCT < $MIN_COVERAGE) }"; then
+            echo "::error::Coverage ${PCT}% is below the minimum ${MIN_COVERAGE}%"
+            exit 1
+          fi
+        fi
+
+    - name: Upload test reports
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: test-reports
+        path: reports/
+        retention-days: 14
+
+  # ===========================================================================
+  # 2. DOCKER BUILD — same Dockerfile and compose file the EC2 uses
+  # ===========================================================================
+  docker:
+    name: Docker build & compose check
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    # Fails here (not on the server) if the token is not wired into compose
+    - name: Validate docker-compose.yml
+      run: |
+        printf 'BOT_API_TOKEN=ci-dummy-token\n' > .env
+        docker compose config > /tmp/compose.yml
+        grep -q 'BOT_API_TOKEN: ci-dummy-token' /tmp/compose.yml \
+          || { echo "::error::BOT_API_TOKEN is not passed to the container"; exit 1; }
+        rm .env
+
+    - name: Build image
+      run: docker build -t whatsapp-bot:ci .
+
+    # Loads every module inside the real image without connecting to WhatsApp
+    - name: Smoke test image
+      run: |
+        docker run --rm -e BOT_API_TOKEN=ci-dummy-token whatsapp-bot:ci node -e "
+          require('./src/handlers/message');
+          const { appApiHeaders } = require('./src/config');
+          if (appApiHeaders()['X-Bot-Token'] !== 'ci-dummy-token') { console.error('X-Bot-Token header missing'); process.exit(1); }
+          console.log('Image OK: module tree loads and X-Bot-Token is sent');
+          process.exit(0);
+        "
+
+  # ===========================================================================
+  # 3. DEPLOY TO EC2 — only on push to master / manual run
+  # ===========================================================================
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    needs: [test, docker]
+    if: github.event_name != 'pull_request'
+    timeout-minutes: 20
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Check secrets
+      env:
+        EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        EC2_HOST: ${{ secrets.EC2_HOST }}
+        BOT_API_TOKEN: ${{ secrets.BOT_API_TOKEN }}
+      run: |
+        for v in EC2_SSH_KEY EC2_HOST; do
+          if [ -z "${!v}" ]; then echo "::error::Missing secret $v"; exit 1; fi
+        done
+        if [ -z "$BOT_API_TOKEN" ]; then
+          echo "::warning::Secret BOT_API_TOKEN is not set: the existing .env on EC2 is kept and the app API will reject the bot once strict mode is on"
+        fi
 
     - name: Setup SSH key
       run: |
@@ -30,11 +208,52 @@ jobs:
         scp -r -o StrictHostKeyChecking=no -i key.pem \
           index.js \
           src \
+          package.json \
+          Dockerfile \
+          .dockerignore \
           docker-compose.yml \
-          ubuntu@${{ secrets.EC2_HOST }}:/home/ubuntu/whatsapp-bot/
+          ubuntu@${{ secrets.EC2_HOST }}:${{ env.APP_DIR }}/
 
+    # Skipped when the secret is empty so a manually created .env is not wiped.
+    # The token is hex (no quotes or spaces), so the quoting below is safe.
+    - name: Write .env on EC2
+      env:
+        BOT_API_TOKEN: ${{ secrets.BOT_API_TOKEN }}
+      run: |
+        if [ -z "$BOT_API_TOKEN" ]; then echo "BOT_API_TOKEN secret empty, skipping"; exit 0; fi
+        ssh -o StrictHostKeyChecking=no -i key.pem ubuntu@${{ secrets.EC2_HOST }} \
+          "umask 077 && printf 'BOT_API_TOKEN=%s\n' '$BOT_API_TOKEN' > ${{ env.APP_DIR }}/.env"
+
+    # Build first: if the build fails, the running container is left untouched
     - name: Rebuild and restart
       run: |
         ssh -o StrictHostKeyChecking=no -i key.pem \
           ubuntu@${{ secrets.EC2_HOST }} \
-          "cd /home/ubuntu/whatsapp-bot && docker compose down && docker compose up -d --build && docker compose logs --tail=20"
+          "cd ${{ env.APP_DIR }} && docker compose build && docker compose up -d && docker compose logs --tail=20"
+
+    # Never prints the token: only checks that it is present inside the container
+    - name: Verify deployment
+      run: |
+        ssh -o StrictHostKeyChecking=no -i key.pem ubuntu@${{ secrets.EC2_HOST }} 'bash -s' <<'EOF'
+        set -e
+        sleep 15
+        STATUS=$(docker inspect -f '{{.State.Status}}' whatsapp-property-bot)
+        RESTARTS=$(docker inspect -f '{{.RestartCount}}' whatsapp-property-bot)
+        echo "Container status: $STATUS | restarts: $RESTARTS"
+        [ "$STATUS" = "running" ] || { echo "::error::Container is not running"; docker logs --tail=50 whatsapp-property-bot; exit 1; }
+
+        if docker exec whatsapp-property-bot sh -c 'test -n "$BOT_API_TOKEN"'; then
+          echo "BOT_API_TOKEN is set inside the container"
+        else
+          echo "::warning::BOT_API_TOKEN is empty inside the container"
+        fi
+
+        if docker logs --since 2m whatsapp-property-bot 2>&1 | grep -E "Uncaught error|Cannot find module"; then
+          echo "::error::Errors found in the bot logs after restart"
+          exit 1
+        fi
+        EOF
+
+    - name: Cleanup SSH key
+      if: always()
+      run: rm -f key.pem

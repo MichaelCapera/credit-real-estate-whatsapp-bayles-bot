@@ -3,7 +3,7 @@
 // ============================================
 
 const { log } = require('../logger');
-const { API_BASE_URL } = require('../config');
+const { API_BASE_URL, appApiHeaders } = require('../config');
 const { resetUserTimer } = require('../state');
 
 /**
@@ -78,9 +78,12 @@ async function handleAgentAccess(sock, sender, senderName, text, msg) {
     try {
         const res = await fetch(`${API_BASE_URL}/api/agentmagiclink`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: appApiHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ phone }),
         });
+        if (res.status === 401) {
+            log('API de la app rechazó el token (401)', 'error');
+        }
         const data = await res.json();
 
         if (!data.success) {

@@ -4,6 +4,7 @@
 
 const { log } = require('./src/logger');
 const { connectToWhatsApp } = require('./src/connection');
+const { BOT_API_TOKEN } = require('./src/config');
 
 process.on('uncaughtException', (error) => {
     log(`Uncaught error: ${error.message}`, 'error');
@@ -14,6 +15,10 @@ process.on('unhandledRejection', (reason) => {
 });
 
 log('🚀 Starting WhatsApp Bot...', 'info');
+
+if (!BOT_API_TOKEN) {
+    log('BOT_API_TOKEN no configurado: la API de la app rechazará las llamadas cuando el modo estricto esté activo', 'warn');
+}
 
 connectToWhatsApp();
 
