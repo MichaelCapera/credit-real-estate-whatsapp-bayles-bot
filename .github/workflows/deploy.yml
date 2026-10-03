@@ -1,7 +1,8 @@
 name: WhatsApp Bot CI/CD (EC2)
 
-# PR to master       -> syntax check + unit tests + Docker build (no deploy)
-# push to master     -> same checks, then deploy to EC2 over SSH + post-deploy verification
+# PR to master       -> syntax check + unit tests + arm64 Docker build (no deploy)
+# push to master     -> same checks, then ship the prebuilt image to EC2 + post-deploy verification
+#                       (the EC2 never builds: it only runs docker load + compose up)
 # workflow_dispatch  -> same as push, triggered manually
 on:
   workflow_dispatch:
@@ -39,7 +40,7 @@ env:
   NODE_VERSION: "20"          # Keep in sync with the Dockerfile base image (node:20-alpine)
   MIN_COVERAGE: "60"          # Minimum % of line coverage over src/ (raise it as tests grow)
   APP_DIR: /home/ubuntu/whatsapp-bot
-  CONTAINER: whatsapp-property-bot
+  IMAGE: whatsapp-bot:latest   # Must match image: in docker-compose.yml
 
 jobs:
   # ===========================================================================
@@ -137,11 +138,14 @@ jobs:
         path: reports/
         retention-days: 14
 
+
   # ===========================================================================
-  # 2. DOCKER BUILD — same Dockerfile and compose file the EC2 uses
+  # 2. DOCKER BUILD — the EC2 (t4g.nano, arm64, 512 MB) never builds:
+  # the arm64 image is built here (QEMU + layer cache), smoke-tested and
+  # handed to the deploy job as an artifact.
   # ===========================================================================
   docker:
-    name: Docker build & compose check
+    name: Docker build (arm64) & compose check
     runs-on: ubuntu-latest
 
     steps:
@@ -155,24 +159,58 @@ jobs:
         docker compose config > /tmp/compose.yml
         grep -q 'BOT_API_TOKEN: ci-dummy-token' /tmp/compose.yml \
           || { echo "::error::BOT_API_TOKEN is not passed to the container"; exit 1; }
+        grep -q "image: ${IMAGE}" /tmp/compose.yml \
+          || { echo "::error::docker-compose.yml must use image ${IMAGE} (the EC2 does not build)"; exit 1; }
         rm .env
 
-    - name: Build image
-      run: docker build -t whatsapp-bot:ci .
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+      with:
+        platforms: arm64
 
-    # Loads every module inside the real image without connecting to WhatsApp
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    # GitHub Actions cache keeps layers (apk, npm install) between runs
+    - name: Build image (linux/arm64)
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        platforms: linux/arm64
+        tags: ${{ env.IMAGE }}
+        load: true
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    # Loads every module inside the real arm64 image without connecting to WhatsApp
     - name: Smoke test image
       run: |
-        docker run --rm -e BOT_API_TOKEN=ci-dummy-token whatsapp-bot:ci node -e "
+        docker run --rm --platform linux/arm64 -e BOT_API_TOKEN=ci-dummy-token "$IMAGE" node -e "
           require('./src/handlers/message');
           const { appApiHeaders } = require('./src/config');
           if (appApiHeaders()['X-Bot-Token'] !== 'ci-dummy-token') { console.error('X-Bot-Token header missing'); process.exit(1); }
-          console.log('Image OK: module tree loads and X-Bot-Token is sent');
+          console.log('Image OK (' + process.arch + '): module tree loads and X-Bot-Token is sent');
           process.exit(0);
         "
 
+    - name: Export image
+      if: github.event_name != 'pull_request'
+      run: |
+        docker save "$IMAGE" | gzip -1 > image.tar.gz
+        echo "Image archive: $(du -h image.tar.gz | cut -f1)"
+
+    - name: Upload image artifact
+      if: github.event_name != 'pull_request'
+      uses: actions/upload-artifact@v4
+      with:
+        name: docker-image
+        path: image.tar.gz
+        retention-days: 1
+        compression-level: 0
+
   # ===========================================================================
-  # 3. DEPLOY TO EC2 — only on push to master / manual run
+  # 3. DEPLOY TO EC2 — only on push to master / manual run.
+  # The server only loads the prebuilt image and restarts: no build, no npm.
   # ===========================================================================
   deploy:
     name: Deploy to EC2
@@ -181,9 +219,18 @@ jobs:
     if: github.event_name != 'pull_request'
     timeout-minutes: 20
 
+    env:
+      # Keepalives stop the connection from dropping while the image is streamed
+      SSH_OPTS: -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -i key.pem
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+
+    - name: Download image artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: docker-image
 
     - name: Check secrets
       env:
@@ -203,16 +250,9 @@ jobs:
         echo "${{ secrets.EC2_SSH_KEY }}" > key.pem
         chmod 600 key.pem
 
-    - name: Copy files to EC2
-      run: |
-        scp -r -o StrictHostKeyChecking=no -i key.pem \
-          index.js \
-          src \
-          package.json \
-          Dockerfile \
-          .dockerignore \
-          docker-compose.yml \
-          ubuntu@${{ secrets.EC2_HOST }}:${{ env.APP_DIR }}/
+    # The code lives inside the image; the server only needs the compose file
+    - name: Copy compose file to EC2
+      run: scp $SSH_OPTS docker-compose.yml ubuntu@${{ secrets.EC2_HOST }}:${{ env.APP_DIR }}/
 
     # Skipped when the secret is empty so a manually created .env is not wiped.
     # The token is hex (no quotes or spaces), so the quoting below is safe.
@@ -221,26 +261,38 @@ jobs:
         BOT_API_TOKEN: ${{ secrets.BOT_API_TOKEN }}
       run: |
         if [ -z "$BOT_API_TOKEN" ]; then echo "BOT_API_TOKEN secret empty, skipping"; exit 0; fi
-        ssh -o StrictHostKeyChecking=no -i key.pem ubuntu@${{ secrets.EC2_HOST }} \
+        ssh $SSH_OPTS ubuntu@${{ secrets.EC2_HOST }} \
           "umask 077 && printf 'BOT_API_TOKEN=%s\n' '$BOT_API_TOKEN' > ${{ env.APP_DIR }}/.env"
 
-    # Build first: if the build fails, the running container is left untouched
-    - name: Rebuild and restart
+    # Streams the archive straight into docker load (no temp file on the server).
+    # The current image is kept as :previous for a manual rollback.
+    - name: Load image on EC2
       run: |
-        ssh -o StrictHostKeyChecking=no -i key.pem \
-          ubuntu@${{ secrets.EC2_HOST }} \
-          "cd ${{ env.APP_DIR }} && docker compose build && docker compose up -d && docker compose logs --tail=20"
+        ssh $SSH_OPTS ubuntu@${{ secrets.EC2_HOST }} \
+          "docker tag $IMAGE ${IMAGE%%:*}:previous 2>/dev/null || true; gunzip | docker load" < image.tar.gz
+
+    - name: Restart bot
+      run: |
+        ssh $SSH_OPTS ubuntu@${{ secrets.EC2_HOST }} \
+          "cd ${{ env.APP_DIR }} && docker compose up -d --no-build --pull never && docker image prune -f > /dev/null && docker compose logs --tail=20"
 
     # Never prints the token: only checks that it is present inside the container
     - name: Verify deployment
       run: |
-        ssh -o StrictHostKeyChecking=no -i key.pem ubuntu@${{ secrets.EC2_HOST }} 'bash -s' <<'EOF'
+        ssh $SSH_OPTS ubuntu@${{ secrets.EC2_HOST }} "IMAGE=$IMAGE bash -s" <<'EOF'
         set -e
         sleep 15
         STATUS=$(docker inspect -f '{{.State.Status}}' whatsapp-property-bot)
         RESTARTS=$(docker inspect -f '{{.RestartCount}}' whatsapp-property-bot)
         echo "Container status: $STATUS | restarts: $RESTARTS"
         [ "$STATUS" = "running" ] || { echo "::error::Container is not running"; docker logs --tail=50 whatsapp-property-bot; exit 1; }
+
+        if [ "$(docker inspect -f '{{.Image}}' whatsapp-property-bot)" = "$(docker image inspect -f '{{.Id}}' "$IMAGE")" ]; then
+          echo "Container runs the image built by this workflow"
+        else
+          echo "::error::Container is not running the newly loaded image"
+          exit 1
+        fi
 
         if docker exec whatsapp-property-bot sh -c 'test -n "$BOT_API_TOKEN"'; then
           echo "BOT_API_TOKEN is set inside the container"
