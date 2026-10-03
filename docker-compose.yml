@@ -1,5 +1,7 @@
 services:
   whatsapp-bot:
+    # Built for arm64 in GitHub Actions and loaded on the EC2 (never built there)
+    image: whatsapp-bot:latest
     build: .
     container_name: whatsapp-property-bot
     restart: unless-stopped
