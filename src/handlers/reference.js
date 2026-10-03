@@ -5,7 +5,7 @@
 const { log } = require('../logger');
 const { formatMainMenu } = require('../formatters/menu');
 const { resetUserTimer, userState } = require('../state');
-const { API_BASE_URL, PROPERTIES_API_URL } = require('../config');
+const { API_BASE_URL, PROPERTIES_API_URL, appApiHeaders } = require('../config');
 
 /**
  * Fetch agent info from API.
@@ -14,7 +14,10 @@ const { API_BASE_URL, PROPERTIES_API_URL } = require('../config');
 async function fetchAgent(agentId) {
     try {
         const url = `${API_BASE_URL}/api/agent?id=${agentId}`;
-        const res = await fetch(url, { method: 'GET' });
+        const res = await fetch(url, { method: 'GET', headers: appApiHeaders() });
+        if (res.status === 401) {
+            log('API de la app rechazó el token (401)', 'error');
+        }
         const data = await res.json();
 
         if (data.success && data.agent) {
@@ -249,9 +252,12 @@ async function createLead(payload) {
     try {
         const res = await fetch(`${API_BASE_URL}/api/lead`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: appApiHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify(payload),
         });
+        if (res.status === 401) {
+            log('API de la app rechazó el token (401)', 'error');
+        }
         const data = await res.json();
         return data;
     } catch (err) {

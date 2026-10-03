@@ -13,6 +13,8 @@ services:
       - NODE_ENV=production
       - API_BASE_URL=https://creditofincaraiz.online
       - PROPERTIES_API_URL=https://8xuawsbnzg.execute-api.us-east-1.amazonaws.com/dev/data-properties
+      # Shared secret for the web app API, read from .env next to this file (never commit it)
+      - BOT_API_TOKEN=${BOT_API_TOKEN}
     # Optional: health check to verify bot is running
     healthcheck:
       test: ["CMD", "node", "-e", "console.log('healthy')"]
